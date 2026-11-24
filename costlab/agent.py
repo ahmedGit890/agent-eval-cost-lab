@@ -2,8 +2,8 @@
 import random
 from dataclasses import dataclass
 
-from .models import (CACHE_READ_DISCOUNT, EARLY_CONTEXT_PENALTY, OUTPUT_TOKENS,
-                     RESULT_TOKENS, SYSTEM_TOKENS, TASK_TOKENS)
+from .models import (EARLY_CONTEXT_PENALTY, OUTPUT_TOKENS, RESULT_TOKENS,
+                     SYSTEM_TOKENS, TASK_TOKENS)
 
 
 @dataclass
@@ -15,6 +15,7 @@ class Usage:
     output_tokens: int = 0
     cost: float = 0.0        # dollars
     latency_ms: float = 0.0
+    escalated: bool = False  # True if the verifier sent the task to the second model
 
     def add(self, other):
         self.calls += other.calls
@@ -54,7 +55,7 @@ def run_attempt(task, model, strategy, rng):
         usage.output_tokens += OUTPUT_TOKENS
         usage.cost += (
             fresh * model.price_in
-            + cached * model.price_in * CACHE_READ_DISCOUNT
+            + cached * model.price_in * strategy.cache_discount
             + OUTPUT_TOKENS * model.price_out
         ) / 1_000_000
         usage.latency_ms += 300 + 0.05 * fresh + 0.005 * cached + 10 * OUTPUT_TOKENS
@@ -68,12 +69,28 @@ def run_attempt(task, model, strategy, rng):
     return usage
 
 
+def verifier_rejects(strategy, answer_is_correct, rng):
+    """Decide whether the verifier rejects an answer (so the task is escalated).
+
+    A perfect verifier (false_accept = false_reject = 0) rejects exactly the wrong
+    answers. A real one makes both kinds of mistake:
+      - false accept: a wrong answer slips through and is returned to the user
+      - false reject: a correct answer is thrown away and paid for a second time
+    """
+    if answer_is_correct:
+        return rng.random() < strategy.false_reject
+    return rng.random() >= strategy.false_accept
+
+
 def run_task(task, strategy, seed, trial):
-    """Run with routing: if the (perfect) verifier rejects, retry on the bigger model."""
+    """Run a task. With an `escalate_to` model, a rejected first answer is redone on it."""
     total = run_attempt(task, strategy.model, strategy, rng_for(seed, task.id, trial, 0))
-    if not total.success and strategy.escalate_to is not None:
-        retry = run_attempt(task, strategy.escalate_to, strategy,
-                            rng_for(seed, task.id, trial, 1))
+    if strategy.escalate_to is None:
+        return total
+    first_correct = total.success
+    if verifier_rejects(strategy, first_correct, rng_for(seed, task.id, trial, 2)):
+        retry = run_attempt(task, strategy.escalate_to, strategy, rng_for(seed, task.id, trial, 1))
         total.add(retry)
-        total.success = retry.success
+        total.success = retry.success  # the retry replaces the first answer, right or wrong
+        total.escalated = True
     return total

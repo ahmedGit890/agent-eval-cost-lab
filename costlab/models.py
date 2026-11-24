@@ -47,6 +47,10 @@ class Strategy:
     escalate_to: Optional[Model] = None  # routing: retry on this model if the first fails
     cache: bool = False                  # prompt caching of the stable prefix
     keep_last: Optional[int] = None      # context trimming: keep only N latest results
+    cache_discount: float = CACHE_READ_DISCOUNT  # share of the normal price paid for cached tokens
+    # Routing verifier quality. 0 and 0 is a perfect verifier (the original behaviour).
+    false_accept: float = 0.0  # chance a WRONG answer is wrongly accepted (no escalation)
+    false_reject: float = 0.0  # chance a CORRECT answer is wrongly rejected (needless escalation)
 
 
 def make_tasks(n=40, seed=0):
